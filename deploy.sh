@@ -15,10 +15,8 @@ git add -A
 git commit -m 'Deploy quiz de Noël'
 
 # Déployer vers GitHub Pages
-# Remplacez <USERNAME>/<REPO> par vos informations
-# git push -f git@github.com:<USERNAME>/<REPO>.git main:gh-pages
+git push -f git@github.com:dydy-ashborn/Bibi-quizz-2025.git main:gh-pages
 
 cd -
 
-echo "✅ Build terminé! Prêt pour le déploiement GitHub Pages"
-echo "📝 N'oubliez pas de mettre à jour l'URL du dépôt dans deploy.sh"
+echo "✅ Déployé sur https://dydy-ashborn.github.io/Bibi-quizz-2025/"

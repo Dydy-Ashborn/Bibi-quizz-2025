@@ -1,136 +1,190 @@
-export class GameEngine {
-  constructor(questions, settings) {
-    this.questions = questions;
-    this.settings = settings;
-    this.currentQuestionIndex = 0;
-    this.players = {};
-    this.scores = {};
-    this.questionOrder = [];
-    this.buzzerWinner = null;
-    this.mcqAnswers = {};
+import comms from './comms';
+import questions from './questions.json';
+class GameEngine {
+  constructor() {
+    this.state = {
+      phase: 'waiting', // waiting, question, results, final
+      players: [],
+      currentQuestionIndex: -1,
+      currentQuestion: null,
+      currentAnswers: [],
+      totalQuestions: questions.length,
+    };
+    this.isHost = false;
+    this.playerId = null;
+    this.stateChangeCallbacks = [];
   }
 
-  addPlayer(playerId, playerData) {
-    this.players[playerId] = {
-      id: playerId,
-      pseudo: playerData.pseudo,
-      avatar: playerData.avatar,
-      joinedAt: Date.now()
-    };
-    this.scores[playerId] = 0;
+  // HOST: Initialiser le jeu en tant qu'hôte
+  async initializeAsHost() {
+    this.isHost = true;
+    
+    const roomCode = await comms.initAsHost();
+
+    comms.onPlayerJoin((playerId, playerName, avatarUrl) => {
+      this.addPlayer(playerId, playerName, avatarUrl);
+    });
+
+    comms.onPlayerLeave((playerId) => {
+      this.removePlayer(playerId);
+    });
+
+    comms.onMessage((message) => {
+      this.handleMessage(message);
+    });
+
+    return roomCode;
+  }
+
+  // PLAYER: Rejoindre en tant que joueur
+  async joinAsPlayer(roomCode, playerName, avatarUrl) {
+    this.isHost = false;
+    this.playerId = this.generatePlayerId();
+    
+    await comms.connectToHost(roomCode, this.playerId, playerName, avatarUrl);
+
+    comms.onMessage((message) => {
+      this.handleMessage(message);
+    });
+  }
+
+  generatePlayerId() {
+    return 'player_' + Math.random().toString(36).substr(2, 9);
+  }
+
+  addPlayer(playerId, playerName, avatarUrl) {
+    if (!this.state.players.find((p) => p.id === playerId)) {
+      this.state.players.push({
+        id: playerId,
+        name: playerName,
+        avatarUrl: avatarUrl,
+        score: 0,
+      });
+      this.notifyStateChange();
+      this.broadcastState();
+    }
   }
 
   removePlayer(playerId) {
-    delete this.players[playerId];
-    delete this.scores[playerId];
+    this.state.players = this.state.players.filter((p) => p.id !== playerId);
+    this.notifyStateChange();
+    this.broadcastState();
   }
 
-  setQuestionOrder(order) {
-    this.questionOrder = order;
-  }
-
-  getCurrentQuestion() {
-    if (this.currentQuestionIndex >= this.questionOrder.length) {
-      return null;
-    }
-    const questionId = this.questionOrder[this.currentQuestionIndex];
-    return this.questions.find(q => q.id === questionId);
-  }
-
-  getQuestionByIndex(index) {
-    if (index >= this.questionOrder.length) {
-      return null;
-    }
-    const questionId = this.questionOrder[index];
-    return this.questions.find(q => q.id === questionId);
-  }
-
-  handleBuzzer(playerId) {
-    const question = this.getCurrentQuestion();
-    if (!question || question.type === 'mcq' || question.type === 'tf') {
-      return null;
-    }
-    
-    if (!this.buzzerWinner) {
-      this.buzzerWinner = playerId;
-      return {
-        winner: playerId,
-        player: this.players[playerId],
-        timestamp: Date.now()
-      };
-    }
-    return null;
-  }
-
-  handleMCQAnswer(playerId, selectedChoice) {
-    const question = this.getCurrentQuestion();
-    if (!question || question.type !== 'mcq') {
-      return false;
-    }
-    
-    this.mcqAnswers[playerId] = selectedChoice;
-    return true;
-  }
-
-  validateAnswer(playerId, isCorrect) {
-    const question = this.getCurrentQuestion();
-    if (!question) return;
-
-    if (isCorrect) {
-      const points = this.settings.difficultyPoints[question.difficulty] || 10;
-      this.scores[playerId] = (this.scores[playerId] || 0) + points;
-    }
-
-    return {
-      playerId,
-      isCorrect,
-      newScore: this.scores[playerId]
-    };
-  }
-
-  resetBuzzer() {
-    this.buzzerWinner = null;
-  }
-
-  resetMCQAnswers() {
-    this.mcqAnswers = {};
+  startGame() {
+    if (!this.isHost) return;
+    this.state.phase = 'question';
+    this.state.currentQuestionIndex = 0;
+    this.state.currentQuestion = questions[0];
+    this.state.currentAnswers = [];
+    this.notifyStateChange();
+    this.broadcastState();
   }
 
   nextQuestion() {
-    this.currentQuestionIndex++;
-    this.buzzerWinner = null;
-    this.mcqAnswers = {};
-    return this.getCurrentQuestion();
-  }
+    if (!this.isHost) return;
 
-  getScoreboard() {
-    const scoreboard = Object.keys(this.scores).map(playerId => ({
-      playerId,
-      pseudo: this.players[playerId]?.pseudo || 'Inconnu',
-      avatar: this.players[playerId]?.avatar || null,
-      score: this.scores[playerId]
-    }));
-
-    return scoreboard.sort((a, b) => b.score - a.score);
-  }
-
-  getProgress() {
-    return {
-      current: this.currentQuestionIndex + 1,
-      total: this.questionOrder.length,
-      percentage: ((this.currentQuestionIndex + 1) / this.questionOrder.length) * 100
-    };
-  }
-
-  isGameOver() {
-    return this.currentQuestionIndex >= this.questionOrder.length;
+    if (this.state.phase === 'question') {
+      // Passer à la phase résultats
+      this.state.phase = 'results';
+      this.calculateScores();
+      this.notifyStateChange();
+      this.broadcastState();
+    } else if (this.state.phase === 'results') {
+      // Passer à la question suivante
+      this.state.currentQuestionIndex++;
+      if (this.state.currentQuestionIndex < questions.length) {
+        this.state.phase = 'question';
+        this.state.currentQuestion = questions[this.state.currentQuestionIndex];
+        this.state.currentAnswers = [];
+        this.notifyStateChange();
+        this.broadcastState();
+      }
+    }
   }
 
   endGame() {
-    return {
-      finalScores: this.getScoreboard(),
-      totalQuestions: this.questionOrder.length,
-      endedAt: Date.now()
-    };
+    if (!this.isHost) return;
+    this.state.phase = 'final';
+    this.state.players.sort((a, b) => b.score - a.score);
+    this.notifyStateChange();
+    this.broadcastState();
+  }
+
+  submitAnswer(answerIndex) {
+    if (this.isHost) return;
+    comms.sendToHost({
+      type: 'answer',
+      playerId: this.playerId,
+      answerIndex: answerIndex,
+      timestamp: Date.now(),
+    });
+  }
+
+  handleMessage(message) {
+    if (message.type === 'state_update') {
+      this.state = message.state;
+      this.notifyStateChange();
+    } else if (message.type === 'answer' && this.isHost) {
+      const existingAnswer = this.state.currentAnswers.find(
+        (a) => a.playerId === message.playerId
+      );
+      if (!existingAnswer) {
+        this.state.currentAnswers.push({
+          playerId: message.playerId,
+          answerIndex: message.answerIndex,
+          timestamp: message.timestamp,
+        });
+        this.notifyStateChange();
+      }
+    }
+  }
+
+  calculateScores() {
+    const correctAnswerIndex = this.state.currentQuestion.correct;
+    const sortedAnswers = [...this.state.currentAnswers].sort(
+      (a, b) => a.timestamp - b.timestamp
+    );
+
+    sortedAnswers.forEach((answer, index) => {
+      if (answer.answerIndex === correctAnswerIndex) {
+        const player = this.state.players.find((p) => p.id === answer.playerId);
+        if (player) {
+          let points = 1000;
+          if (index === 0) points += 500; // Bonus premier
+          else if (index === 1) points += 300; // Bonus deuxième
+          else if (index === 2) points += 100; // Bonus troisième
+          player.score += points;
+        }
+      }
+    });
+  }
+
+  broadcastState() {
+    if (this.isHost) {
+      comms.broadcast({
+        type: 'state_update',
+        state: this.state,
+      });
+    }
+  }
+
+  onStateChange(callback) {
+    this.stateChangeCallbacks.push(callback);
+  }
+
+  notifyStateChange() {
+    this.stateChangeCallbacks.forEach((callback) => callback(this.state));
+  }
+
+  getState() {
+    return this.state;
+  }
+
+  cleanup() {
+    comms.disconnect();
+    this.stateChangeCallbacks = [];
   }
 }
+
+export default new GameEngine();

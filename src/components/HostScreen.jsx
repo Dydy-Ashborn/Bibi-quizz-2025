@@ -1,385 +1,278 @@
 import React, { useState, useEffect } from 'react';
-import { GameEngine } from '../utils/gameEngine';
-import { shuffleQuestions } from '../utils/shuffleQuestions';
 import ScoreBoard from './ScoreBoard';
+import gameEngine from '../utils/gameEngine';
 import SnowEffect from './SnowEffect';
 
-const HostScreen = ({ comms, questions, settings }) => {
-  const [gameEngine] = useState(() => new GameEngine(questions, settings));
-  const [gameStarted, setGameStarted] = useState(false);
-  const [currentQuestion, setCurrentQuestion] = useState(null);
-  const [buzzerWinner, setBuzzerWinner] = useState(null);
-  const [mcqAnswers, setMcqAnswers] = useState({});
-  const [players, setPlayers] = useState({});
-  const [scores, setScores] = useState({});
-  const [showScoreboard, setShowScoreboard] = useState(false);
-  const [gameEnded, setGameEnded] = useState(false);
-  const [progress, setProgress] = useState({ current: 0, total: 0, percentage: 0 });
-  const [validatedPlayers, setValidatedPlayers] = useState({});
+function HostScreen({ onExit }) {
+  const [gameState, setGameState] = useState(null);
+  const [roomCode, setRoomCode] = useState('');
+  const [showRoomCode, setShowRoomCode] = useState(true);
 
   useEffect(() => {
-    // Écouter les événements des joueurs
-    comms.on('player:join', handlePlayerJoin);
-    comms.on('player:buzz', handlePlayerBuzz);
-    comms.on('player:mcq', handlePlayerMCQ);
+    const initialize = async () => {
+      try {
+        const code = await gameEngine.initializeAsHost();
+        setRoomCode(code);
+        
+        gameEngine.onStateChange((newState) => {
+          setGameState(newState);
+          
+          // Masquer le code quand le jeu commence
+          if (newState.phase === 'question' && showRoomCode) {
+            setShowRoomCode(false);
+          }
+        });
+
+        setGameState(gameEngine.getState());
+      } catch (error) {
+        console.error('Failed to initialize host:', error);
+        alert('Erreur lors de l\'initialisation. Veuillez réessayer.');
+        onExit();
+      }
+    };
+
+    initialize();
 
     return () => {
-      comms.off('player:join', handlePlayerJoin);
-      comms.off('player:buzz', handlePlayerBuzz);
-      comms.off('player:mcq', handlePlayerMCQ);
+      gameEngine.cleanup();
     };
-  }, []);
+  }, [onExit, showRoomCode]);
 
-  const handlePlayerJoin = (playerData) => {
-    gameEngine.addPlayer(playerData.playerId, playerData);
-    setPlayers({ ...gameEngine.players });
-    setScores({ ...gameEngine.scores });
+  const handleStartGame = () => {
+    gameEngine.startGame();
   };
 
-  const handlePlayerBuzz = (data) => {
-    const result = gameEngine.handleBuzzer(data.playerId);
-    if (result) {
-      setBuzzerWinner(result);
-    }
-  };
-
-  const handlePlayerMCQ = (data) => {
-    gameEngine.handleMCQAnswer(data.playerId, data.selectedChoice);
-    setMcqAnswers({ ...gameEngine.mcqAnswers });
-  };
-
-  const startGame = () => {
-    const questionOrder = shuffleQuestions(questions);
-    gameEngine.setQuestionOrder(questionOrder);
-    setGameStarted(true);
-    loadNextQuestion();
-  };
-
-  const loadNextQuestion = () => {
-    const question = gameEngine.getCurrentQuestion();
-    if (question) {
-      setCurrentQuestion(question);
-      setBuzzerWinner(null);
-      setMcqAnswers({});
-      setValidatedPlayers({});
-      setShowScoreboard(false);
-      setProgress(gameEngine.getProgress());
-      
-      // Envoyer la question aux joueurs
-      comms.hostStartQuestion(question);
-    } else {
-      endGame();
-    }
-  };
-
-  const validateAnswer = (playerId, isCorrect) => {
-    gameEngine.validateAnswer(playerId, isCorrect);
-    setScores({ ...gameEngine.scores });
-    
-    // Ajouter le feedback visuel
-    setValidatedPlayers(prev => ({
-      ...prev,
-      [playerId]: isCorrect
-    }));
-    
-    comms.send('host:validate', { playerId, isCorrect, playerName: players[playerId]?.pseudo });
-  };
-
-  const nextQuestion = () => {
+  const handleNextQuestion = () => {
     gameEngine.nextQuestion();
-    comms.hostNextQuestion();
-    
-    const question = gameEngine.getCurrentQuestion();
-    if (question) {
-      setCurrentQuestion(question);
-      setBuzzerWinner(null);
-      setMcqAnswers({});
-      setValidatedPlayers({});
-      setProgress(gameEngine.getProgress());
-      
-      comms.hostStartQuestion(question);
-    } else {
-      endGame();
-    }
   };
 
-  const resetBuzzer = () => {
-    gameEngine.resetBuzzer();
-    setBuzzerWinner(null);
-    setValidatedPlayers({});
-    comms.send('host:reset-buzzer', {});
+  const handleEndGame = () => {
+    gameEngine.endGame();
   };
 
-  const toggleScoreboard = () => {
-    setShowScoreboard(!showScoreboard);
-  };
-
-  const endGame = () => {
-    const finalData = gameEngine.endGame();
-    setGameEnded(true);
-    setShowScoreboard(true);
-    comms.hostEndGame();
-  };
-
-  const exportScores = () => {
-    const scoreboard = gameEngine.getScoreboard();
-    const csv = [
-      'Rang,Pseudo,Score',
-      ...scoreboard.map((p, i) => `${i + 1},${p.pseudo},${p.score}`)
-    ].join('\n');
-
-    const blob = new Blob([csv], { type: 'text/csv' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `quiz-noel-scores-${Date.now()}.csv`;
-    a.click();
-  };
-
-  if (!gameStarted) {
+  if (!gameState) {
     return (
-      <div className="screen host-screen">
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-red-600 via-green-600 to-red-700">
         <SnowEffect />
-        <div className="content">
-          <h2>🎅 Présentateur</h2>
-          
-          <div className="players-waiting">
-            <h3>Joueurs connectés: {Object.keys(players).length}</h3>
-            <div className="players-list">
-              {Object.values(players).map(player => (
-                <div key={player.id} className="player-card">
-                  {player.avatar && (
-                    <img src={player.avatar} alt={player.pseudo} className="player-avatar-small" />
-                  )}
-                  <span>{player.pseudo}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <button
-            className="btn btn-primary btn-large"
-            onClick={startGame}
-            disabled={Object.keys(players).length === 0}
-          >
-            🎬 Lancer la partie
-          </button>
-
-          <p className="info-text">
-            {Object.keys(players).length === 0 
-              ? 'En attente de joueurs...' 
-              : 'Tous les joueurs sont prêts!'}
-          </p>
-        </div>
+        <div className="text-white text-2xl">Initialisation...</div>
       </div>
     );
   }
-
-  if (gameEnded) {
-    const scoreboard = gameEngine.getScoreboard();
-    
-    return (
-      <div className="screen host-screen">
-        <SnowEffect />
-        <div className="content">
-          <h2>🎉 Partie terminée!</h2>
-          
-          <div className="final-results">
-            <h3>🏆 Classement final</h3>
-            <div className="scoreboard-list">
-              {scoreboard.map((player, index) => (
-                <div key={player.playerId} className="scoreboard-item final">
-                  <div className="rank large">{index + 1}</div>
-                  {player.avatar && (
-                    <img src={player.avatar} alt={player.pseudo} className="player-avatar" />
-                  )}
-                  <div className="player-info">
-                    <div className="player-pseudo large">{player.pseudo}</div>
-                    <div className="player-score large">{player.score} pts</div>
-                  </div>
-                  {index === 0 && <span className="trophy large">👑</span>}
-                  {index === 1 && <span className="trophy">🥈</span>}
-                  {index === 2 && <span className="trophy">🥉</span>}
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <div className="final-actions">
-            <button className="btn btn-secondary" onClick={exportScores}>
-              📥 Exporter les scores (CSV)
-            </button>
-            <button className="btn btn-primary" onClick={() => window.location.reload()}>
-              🔄 Nouvelle partie
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  if (!currentQuestion) return null;
-
-  const isMCQ = currentQuestion.type === 'mcq' || currentQuestion.type === 'tf';
 
   return (
-    <div className="screen host-screen">
+    <div className="min-h-screen bg-gradient-to-br from-red-600 via-green-600 to-red-700 p-8 relative">
       <SnowEffect />
-      <div className="content">
-        <div className="game-header">
-          <div className="progress-bar">
-            <div className="progress-fill" style={{ width: `${progress.percentage}%` }} />
-            <span className="progress-text">
-              Question {progress.current} / {progress.total}
-            </span>
+      
+      {/* Code de connexion en haut à droite */}
+      {showRoomCode && (
+        <div className="absolute top-4 right-4 bg-white/95 backdrop-blur-sm rounded-2xl shadow-2xl p-6 border-4 border-yellow-400">
+          <div className="text-center">
+            <div className="text-sm font-semibold text-gray-600 mb-2">CODE DE CONNEXION</div>
+            <div className="text-5xl font-bold text-red-600 tracking-wider font-mono">
+              {roomCode}
+            </div>
+            <div className="text-xs text-gray-500 mt-2">Les joueurs doivent entrer ce code</div>
           </div>
         </div>
+      )}
 
-        {showScoreboard && (
-          <div className="scoreboard-overlay">
-            <ScoreBoard players={players} scores={scores} />
-            <button className="btn btn-secondary" onClick={toggleScoreboard}>
-              Fermer
-            </button>
+      {/* Bouton retour */}
+      <button
+        onClick={onExit}
+        className="absolute top-4 left-4 bg-white/90 hover:bg-white text-red-600 px-6 py-3 rounded-full font-bold shadow-lg transition-all z-10"
+      >
+        ← Quitter
+      </button>
+
+      <div className="max-w-6xl mx-auto pt-20">
+        {/* Waiting Phase */}
+        {gameState.phase === 'waiting' && (
+          <div className="text-center">
+            <h1 className="text-6xl font-bold text-white mb-8 drop-shadow-lg">
+              🎄 Quiz de Noël 🎅
+            </h1>
+            
+            <div className="bg-white/95 backdrop-blur-sm rounded-3xl shadow-2xl p-12 mb-8">
+              <h2 className="text-3xl font-bold text-red-600 mb-6">
+                En attente des joueurs...
+              </h2>
+              
+              {gameState.players.length === 0 ? (
+                <div className="text-gray-600 text-xl mb-8">
+                  Les joueurs doivent entrer le code <span className="font-bold text-red-600">{roomCode}</span>
+                </div>
+              ) : (
+                <div className="mb-8">
+                  <h3 className="text-xl font-semibold text-gray-700 mb-4">
+                    Joueurs connectés ({gameState.players.length}) :
+                  </h3>
+                  <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+                    {gameState.players.map((player) => (
+                      <div
+                        key={player.id}
+                        className="bg-green-50 rounded-xl p-4 border-2 border-green-200"
+                      >
+                        <img
+                          src={player.avatarUrl}
+                          alt={player.name}
+                          className="w-16 h-16 rounded-full mx-auto mb-2 border-2 border-green-400"
+                        />
+                        <div className="font-semibold text-gray-800">{player.name}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <button
+                onClick={handleStartGame}
+                disabled={gameState.players.length === 0}
+                className={`text-2xl px-12 py-4 rounded-full font-bold transition-all shadow-lg ${
+                  gameState.players.length === 0
+                    ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                    : 'bg-green-500 hover:bg-green-600 text-white hover:scale-105'
+                }`}
+              >
+                Commencer le Quiz
+              </button>
+            </div>
           </div>
         )}
 
-        <div className="question-panel">
-          <div className="question-header">
-            <span className="question-category">{currentQuestion.category}</span>
-            <span className="question-subcategory">{currentQuestion.subcategory}</span>
-            <span className="question-difficulty">
-              Difficulté: {'⭐'.repeat(currentQuestion.difficulty)} ({settings.difficultyPoints[currentQuestion.difficulty]} pts)
-            </span>
-          </div>
-
-          <h3 className="question-text">{currentQuestion.question}</h3>
-
-          {currentQuestion.image_url && (
-            <img src={currentQuestion.image_url} alt="Question" className="question-image" />
-          )}
-
-          {currentQuestion.audio_url && (
-            <div className="audio-player">
-              <audio controls src={currentQuestion.audio_url} />
-            </div>
-          )}
-
-          <div className="answer-panel">
-            <h4>Réponse correcte:</h4>
-            <div className="correct-answer">
-              {currentQuestion.answer}
-            </div>
-            
-            {currentQuestion.choices && (
-              <div className="choices-display">
-                <h5>Choix:</h5>
-                {currentQuestion.choices.map((choice, index) => (
-                  <div key={index} className={`choice-item ${choice === currentQuestion.answer ? 'correct' : ''}`}>
-                    {String.fromCharCode(65 + index)}. {choice}
-                  </div>
-                ))}
+        {/* Question Phase */}
+        {gameState.phase === 'question' && gameState.currentQuestion && (
+          <div>
+            <div className="bg-white/95 backdrop-blur-sm rounded-3xl shadow-2xl p-12 mb-8">
+              <div className="text-center mb-8">
+                <span className="bg-red-500 text-white px-6 py-2 rounded-full text-xl font-bold">
+                  Question {gameState.currentQuestionIndex + 1}/{gameState.totalQuestions}
+                </span>
               </div>
-            )}
 
-            {currentQuestion.explanation && (
-              <div className="explanation">
-                <strong>Explication:</strong> {currentQuestion.explanation}
-              </div>
-            )}
-          </div>
-        </div>
+              <h2 className="text-4xl font-bold text-gray-800 mb-12 text-center">
+                {gameState.currentQuestion.question}
+              </h2>
 
-        {isMCQ ? (
-          <div className="mcq-responses">
-            <h4>Réponses des joueurs:</h4>
-            <div className="mcq-answers-list">
-              {Object.entries(mcqAnswers).length === 0 ? (
-                <p>En attente des réponses...</p>
-              ) : (
-                Object.entries(mcqAnswers).map(([playerId, choice]) => (
-                  <div key={playerId} className="mcq-answer-item">
-                    {players[playerId]?.avatar && (
-                      <img src={players[playerId].avatar} alt="" className="player-avatar-tiny" />
-                    )}
-                    <span className="player-name">{players[playerId]?.pseudo || 'Inconnu'}</span>
-                    <span className="player-choice">{choice}</span>
-                    <div className="validation-buttons">
-                      <button
-                        className="btn btn-success btn-small"
-                        onClick={() => validateAnswer(playerId, choice === currentQuestion.answer)}
-                        disabled={validatedPlayers[playerId] !== undefined}
-                      >
-                        ✓
-                      </button>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                {gameState.currentQuestion.answers.map((answer, index) => {
+                  const colors = [
+                    'bg-red-500',
+                    'bg-blue-500',
+                    'bg-yellow-500',
+                    'bg-green-500',
+                  ];
+                  return (
+                    <div
+                      key={index}
+                      className={`${colors[index]} text-white p-8 rounded-2xl text-2xl font-bold text-center shadow-lg`}
+                    >
+                      {answer}
                     </div>
-                    {validatedPlayers[playerId] !== undefined && (
-                      <span className={`validation-badge ${validatedPlayers[playerId] ? 'correct' : 'incorrect'}`}>
-                        {validatedPlayers[playerId] ? '🎅' : '❄️'}
-                      </span>
-                    )}
-                  </div>
-                ))
+                  );
+                })}
+              </div>
+
+              <div className="text-center mt-8">
+                <div className="text-gray-600 text-xl">
+                  Réponses reçues : {gameState.currentAnswers.length}/{gameState.players.length}
+                </div>
+              </div>
+            </div>
+
+            <div className="text-center">
+              <button
+                onClick={handleNextQuestion}
+                className="bg-white hover:bg-gray-100 text-red-600 px-12 py-4 rounded-full text-2xl font-bold shadow-lg transition-all hover:scale-105"
+              >
+                Question suivante →
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Results Phase */}
+        {gameState.phase === 'results' && gameState.currentQuestion && (
+          <div>
+            <div className="bg-white/95 backdrop-blur-sm rounded-3xl shadow-2xl p-12 mb-8">
+              <h2 className="text-4xl font-bold text-center mb-8 text-gray-800">
+                Réponse correcte :
+              </h2>
+              
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+                {gameState.currentQuestion.answers.map((answer, index) => {
+                  const isCorrect = index === gameState.currentQuestion.correct;
+                  const colors = [
+                    'bg-red-500',
+                    'bg-blue-500',
+                    'bg-yellow-500',
+                    'bg-green-500',
+                  ];
+                  
+                  return (
+                    <div
+                      key={index}
+                      className={`${
+                        isCorrect
+                          ? 'bg-green-500 ring-8 ring-yellow-400'
+                          : colors[index] + ' opacity-50'
+                      } text-white p-8 rounded-2xl text-2xl font-bold text-center shadow-lg transition-all`}
+                    >
+                      {answer}
+                      {isCorrect && <div className="text-4xl mt-2">✓</div>}
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div className="text-center text-gray-700 text-xl">
+                {gameState.currentQuestion.explanation}
+              </div>
+            </div>
+
+            <ScoreBoard players={gameState.players} compact={true} />
+
+            <div className="text-center mt-8">
+              {gameState.currentQuestionIndex < gameState.totalQuestions - 1 ? (
+                <button
+                  onClick={handleNextQuestion}
+                  className="bg-white hover:bg-gray-100 text-red-600 px-12 py-4 rounded-full text-2xl font-bold shadow-lg transition-all hover:scale-105"
+                >
+                  Question suivante →
+                </button>
+              ) : (
+                <button
+                  onClick={handleEndGame}
+                  className="bg-yellow-400 hover:bg-yellow-500 text-red-600 px-12 py-4 rounded-full text-2xl font-bold shadow-lg transition-all hover:scale-105"
+                >
+                  Voir les résultats finaux 🏆
+                </button>
               )}
             </div>
           </div>
-        ) : (
-          <div className="buzzer-responses">
-            <h4>Buzzer:</h4>
-            {buzzerWinner ? (
-              <div className="buzzer-winner">
-                <div className="winner-card">
-                  {buzzerWinner.player?.avatar && (
-                    <img src={buzzerWinner.player.avatar} alt="" className="player-avatar" />
-                  )}
-                  <span className="winner-name">{buzzerWinner.player?.pseudo || 'Inconnu'}</span>
-                  <span className="winner-badge">⚡ A buzzé!</span>
-                </div>
-                <div className="validation-buttons">
-                  <button
-                    className="btn btn-success"
-                    onClick={() => validateAnswer(buzzerWinner.winner, true)}
-                    disabled={validatedPlayers[buzzerWinner.winner] !== undefined}
-                  >
-                    ✅ Correct
-                  </button>
-                  <button
-                    className="btn btn-danger"
-                    onClick={() => validateAnswer(buzzerWinner.winner, false)}
-                    disabled={validatedPlayers[buzzerWinner.winner] !== undefined}
-                  >
-                    ❌ Incorrect
-                  </button>
-                </div>
-                {validatedPlayers[buzzerWinner.winner] !== undefined && (
-                  <div className={`validation-feedback ${validatedPlayers[buzzerWinner.winner] ? 'correct' : 'incorrect'}`}>
-                    {validatedPlayers[buzzerWinner.winner] ? '🎅 Point accordé !' : '❄️ Point refusé'}
-                  </div>
-                )}
-                <button className="btn btn-secondary btn-small" onClick={resetBuzzer}>
-                  🔄 Reset Buzzer
-                </button>
-              </div>
-            ) : (
-              <p className="waiting-buzz">En attente d'un buzz...</p>
-            )}
-          </div>
         )}
 
-        <div className="host-actions">
-          <button className="btn btn-primary" onClick={nextQuestion}>
-            ➡️ Question suivante
-          </button>
-          <button className="btn btn-secondary" onClick={toggleScoreboard}>
-            📊 Classement
-          </button>
-          <button className="btn btn-danger" onClick={endGame}>
-            🏁 Fin de partie
-          </button>
-        </div>
+        {/* Final Phase */}
+        {gameState.phase === 'final' && (
+          <div>
+            <h1 className="text-6xl font-bold text-white text-center mb-8 drop-shadow-lg">
+              🏆 Classement Final 🏆
+            </h1>
+            
+            <ScoreBoard players={gameState.players} />
+
+            <div className="text-center mt-8">
+              <button
+                onClick={onExit}
+                className="bg-white hover:bg-gray-100 text-red-600 px-12 py-4 rounded-full text-2xl font-bold shadow-lg transition-all hover:scale-105"
+              >
+                Retour à l'accueil
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
-};
+}
 
 export default HostScreen;
